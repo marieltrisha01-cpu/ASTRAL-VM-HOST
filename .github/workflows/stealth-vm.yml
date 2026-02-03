@@ -42,36 +42,45 @@ jobs:
           Write-Host "New Life Started - Clean State."
         }
 
-    # 3. Enable RDP & Ngrok Tunnel (Debug Mode)
+    # 3. Enable RDP & Ngrok Tunnel (Robust Mode)
     - name: Start Ngrok Tunnel
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
       run: |
         choco install ngrok -y
         
-        # 1. Validate Token Presence
+        # 1. Validate Token
         if (-not $env:NGROK_AUTH_TOKEN) {
-            Write-Error "CRITICAL: NGROK_AUTH_TOKEN secret is MISSING or EMPTY."
+            Write-Error "CRITICAL: NGROK_AUTH_TOKEN secret is MISSING."
             exit 1
         }
         
-        # 2. Configure Ngrok
-        ngrok authtoken $env:NGROK_AUTH_TOKEN
+        # 2. Configure Ngrok (Main Shell)
+        $ngrokPath = (Get-Command ngrok).Source
+        & $ngrokPath authtoken $env:NGROK_AUTH_TOKEN
         
-        # 3. Start Ngrok in Background with Logging
-        Write-Host "Starting Ngrok..."
-        $ngrokProcess = Start-Process -FilePath "ngrok" -ArgumentList "tcp 3389 --log=stdout" -PassThru -RedirectStandardOutput "ngrok.log" -RedirectStandardError "ngrok_error.log" -WindowStyle Hidden
+        Write-Host "Ngrok Executable Found: $ngrokPath"
         
-        # 4. Wait and Verify
+        # 3. Start Ngrok in Background Job using Absolute Path
+        $job = Start-Job -ScriptBlock {
+            param($path)
+            # Use 'Call Operator' & and redirect output
+            & $path tcp 3389 --log=stdout > ngrok_debug.log 2>&1
+        } -ArgumentList $ngrokPath
+        
+        # 4. Wait for Tunnel
         $url = $null
-        for ($i = 0; $i -lt 20; $i++) {
+        for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             
-            # Check if process died
-            if ($ngrokProcess.HasExited) {
-                Write-Error "Ngrok process DIED unexpectedly."
-                Get-Content ngrok.log -ErrorAction SilentlyContinue
-                Get-Content ngrok_error.log -ErrorAction SilentlyContinue
+            # Check if job crashed
+            if ($job.State -ne 'Running') {
+                Write-Error "Ngrok Job CRASHED."
+                Receive-Job $job
+                if (Test-Path ngrok_debug.log) { 
+                    Write-Host "--- Ngrok Logs ---"
+                    Get-Content ngrok_debug.log 
+                }
                 exit 1
             }
 
@@ -80,13 +89,13 @@ jobs:
                 $url = $json.tunnels[0].public_url
                 if ($url) { break }
             } catch {
-                Write-Host "Waiting for API... ($i/20)"
+                Write-Host "Waiting for API... ($i/30)"
             }
         }
 
         if (-not $url) {
             Write-Error "Timed out waiting for URL."
-            Get-Content ngrok.log -ErrorAction SilentlyContinue
+            if (Test-Path ngrok_debug.log) { Get-Content ngrok_debug.log }
             exit 1
         }
 
