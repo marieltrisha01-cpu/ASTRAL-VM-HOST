@@ -50,9 +50,25 @@ jobs:
         choco install ngrok -y
         ngrok authtoken $env:NGROK_AUTH_TOKEN
         Start-Job -ScriptBlock { ngrok tcp 3389 }
-        Start-Sleep -Seconds 10
-        $json = Invoke-RestMethod http://localhost:4040/api/tunnels
-        $url = $json.tunnels[0].public_url
+        
+        # Wait for Ngrok to start (Retry Loop)
+        $url = $null
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+                $json = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
+                $url = $json.tunnels[0].public_url
+                if ($url) { break }
+            } catch {
+                Write-Host "Waiting for Ngrok API... ($i/20)"
+            }
+        }
+
+        if (-not $url) {
+            Write-Error "Ngrok failed to start or get URL."
+            exit 1
+        }
+
         Write-Host "::notice::RDP ADDRESS: $url"
         $url | Out-File RDP_CONNECTION.txt
 
