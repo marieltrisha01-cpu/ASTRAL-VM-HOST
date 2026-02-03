@@ -42,30 +42,51 @@ jobs:
           Write-Host "New Life Started - Clean State."
         }
 
-    # 3. Enable RDP & Ngrok Tunnel
+    # 3. Enable RDP & Ngrok Tunnel (Debug Mode)
     - name: Start Ngrok Tunnel
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
       run: |
         choco install ngrok -y
-        ngrok authtoken $env:NGROK_AUTH_TOKEN
-        Start-Job -ScriptBlock { ngrok tcp 3389 }
         
-        # Wait for Ngrok to start (Retry Loop)
+        # 1. Validate Token Presence
+        if (-not $env:NGROK_AUTH_TOKEN) {
+            Write-Error "CRITICAL: NGROK_AUTH_TOKEN secret is MISSING or EMPTY."
+            exit 1
+        }
+        
+        # 2. Configure Ngrok
+        ngrok authtoken $env:NGROK_AUTH_TOKEN
+        
+        # 3. Start Ngrok in Background with Logging
+        Write-Host "Starting Ngrok..."
+        $ngrokProcess = Start-Process -FilePath "ngrok" -ArgumentList "tcp 3389 --log=stdout" -PassThru -RedirectStandardOutput "ngrok.log" -RedirectStandardError "ngrok_error.log" -WindowStyle Hidden
+        
+        # 4. Wait and Verify
         $url = $null
         for ($i = 0; $i -lt 20; $i++) {
             Start-Sleep -Seconds 2
+            
+            # Check if process died
+            if ($ngrokProcess.HasExited) {
+                Write-Error "Ngrok process DIED unexpectedly."
+                Get-Content ngrok.log -ErrorAction SilentlyContinue
+                Get-Content ngrok_error.log -ErrorAction SilentlyContinue
+                exit 1
+            }
+
             try {
                 $json = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
                 $url = $json.tunnels[0].public_url
                 if ($url) { break }
             } catch {
-                Write-Host "Waiting for Ngrok API... ($i/20)"
+                Write-Host "Waiting for API... ($i/20)"
             }
         }
 
         if (-not $url) {
-            Write-Error "Ngrok failed to start or get URL."
+            Write-Error "Timed out waiting for URL."
+            Get-Content ngrok.log -ErrorAction SilentlyContinue
             exit 1
         }
 
