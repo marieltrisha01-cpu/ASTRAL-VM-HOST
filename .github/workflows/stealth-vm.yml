@@ -25,6 +25,7 @@ jobs:
         RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
         RCLONE_CONFIG_BLOB: ${{ secrets.RCLONE_CONFIG_BLOB }}
       run: |
+        # Configure rclone from secret blob
         if ($env:RCLONE_CONFIG_BLOB) {
             $env:RCLONE_CONFIG_BLOB | Out-File -Encoding UTF8 rclone.conf
         }
@@ -42,7 +43,7 @@ jobs:
           Write-Host "New Life Started."
         }
 
-    # 3. Enable RDP & Ngrok Tunnel (Absolute & Direct)
+    # 3. Enable RDP & Ngrok Tunnel (Debug Mode + Shim Fix)
     - name: Start Ngrok Tunnel
       env:
         NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
@@ -50,38 +51,59 @@ jobs:
         choco install ngrok -y
         
         if (-not $env:NGROK_AUTH_TOKEN) {
-            Write-Error "CRITICAL: NGROK_AUTH_TOKEN secret is MISSING."
+            Write-Host "::error title=Missing Secret::NGROK_AUTH_TOKEN is missing! Add it in Settings > Secrets."
             exit 1
         }
         
-        # 1. Configure and Find Ngrok
-        $ngrokPath = (Get-Command ngrok).Source
-        & $ngrokPath authtoken $env:NGROK_AUTH_TOKEN
-        Write-Host "Ngrok Executable: $ngrokPath"
+        # 1. Bruteforce Find Real Ngrok (Bypass Choco Shim)
+        # Shims exit immediately, causing "Process DIED" errors. We need the real binary.
+        $ngrokPath = Get-ChildItem "C:\ProgramData\chocolatey\lib\ngrok\tools\ngrok*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
         
-        # 2. Define Log Paths (Absolute)
+        if (-not $ngrokPath) {
+             # Fallback to standard path if lib search fails
+             $ngrokPath = (Get-Command ngrok -ErrorAction SilentlyContinue).Source
+        }
+        
+        Write-Host "::notice title=Ngrok Path::Targeting Real Binary: $ngrokPath"
+        
+        if (-not $ngrokPath -or -not (Test-Path $ngrokPath)) {
+             Write-Host "::error title=Ngrok Not Found::Could not find ngrok.exe in standard paths."
+             exit 1
+        }
+
+        # 2. Authenticate
+        & $ngrokPath authtoken $env:NGROK_AUTH_TOKEN
+        
+        # 3. Start Process with Explicit Log Output
         $logPath = Join-Path $pwd "ngrok.log"
         $errPath = Join-Path $pwd "ngrok_error.log"
         
-        # 3. Start Process (Not Job) to avoid path/context issues
-        Write-Host "Starting Ngrok Process..."
+        Write-Host "Starting Ngrok..."
         $p = Start-Process -FilePath $ngrokPath -ArgumentList "tcp 3389 --log=stdout" -PassThru -RedirectStandardOutput $logPath -RedirectStandardError $errPath -WindowStyle Hidden
         
-        # 4. Wait for Tunnel
+        # 4. Wait for Tunnel (Loop with Debug Checks)
         $url = $null
         for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             
+            # Check if process died
             if ($p.HasExited) {
-                Write-Error "Ngrok Process DIED."
-                Write-Host "--- DETAILED ERROR LOGS ---"
-                if (Test-Path $logPath) { Get-Content $logPath }
-                if (Test-Path $errPath) { Get-Content $errPath }
+                Write-Host "::error title=Ngrok Crashed::Process exited unexpectedly."
+                
+                if (Test-Path $logPath) { 
+                    $logContent = Get-Content $logPath | Out-String
+                    Write-Host "::error title=Ngrok STDOUT::$logContent"
+                }
+                if (Test-Path $errPath) { 
+                    $errContent = Get-Content $errPath | Out-String
+                    Write-Host "::error title=Ngrok STDERR::$errContent"
+                }
                 exit 1
             }
 
+            # Check API for Tunnel URL
             try {
-                $json = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction Stop
+                $json = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction SilentlyContinue
                 $url = $json.tunnels[0].public_url
                 if ($url) { break }
             } catch {
@@ -90,11 +112,12 @@ jobs:
         }
 
         if (-not $url) {
-            Write-Error "Timed out waiting for URL."
+            Write-Host "::error title=Timeout::Could not get RDP address from Ngrok API."
             exit 1
         }
 
-        Write-Host "::notice::RDP ADDRESS: $url"
+        # SUCCESS: Print to Summary Page
+        Write-Host "::notice title=RDP SUCCESS::Address: $url"
         $url | Out-File RDP_CONNECTION.txt
 
     - name: Enable Windows RDP
@@ -105,7 +128,17 @@ jobs:
         net user runneradmin "${{ secrets.VM_PASSWORD }}" /add
         net localgroup administrators runneradmin /add
 
-    # 4. Keep Alive & Auto-Heal Sync Loop
+    # 4. Always Upload Logs (For Debugging)
+    - name: Upload Debug Logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: debug-logs
+        path: |
+          *.log
+          RDP_CONNECTION.txt
+
+    # 5. Keep Alive & Auto-Heal Sync Loop
     - name: Run & Sync Loop
       run: |
         $counter = 0
