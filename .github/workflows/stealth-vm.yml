@@ -1,0 +1,83 @@
+name: Stealth VM (RDP + Auto-Heal)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'  # Auto-Heal every 5 hours
+
+jobs:
+  virtual-machine:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    # 1. Setup Environment & Tools
+    - name: Install Essentials
+      run: |
+        choco install rclone -y
+        pip install py7zr
+        
+    # 2. "Resurrection" - Pull State from Cloud
+    - name: Restore Soul (State)
+      env:
+        RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
+        RCLONE_CONFIG_BLOB: ${{ secrets.RCLONE_CONFIG_BLOB }}
+      run: |
+        if ($env:RCLONE_CONFIG_BLOB) {
+            $env:RCLONE_CONFIG_BLOB | Out-File -Encoding UTF8 rclone.conf
+        }
+        mkdir C:\EnterpriseState -ErrorAction SilentlyContinue
+        
+        # Download state.zip (e.g. from TeraBox/GDrive alias 'remote')
+        if (Test-Path rclone.conf) {
+            rclone copy remote:backups/state.zip . --config rclone.conf --ignore-errors
+        }
+        
+        # Unzip if exists
+        if (Test-Path state.zip) {
+          7z x state.zip -oC:\EnterpriseState
+        } else {
+          Write-Host "New Life Started - Clean State."
+        }
+
+    # 3. Enable RDP & Ngrok Tunnel
+    - name: Start Ngrok Tunnel
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      run: |
+        choco install ngrok -y
+        ngrok authtoken $env:NGROK_AUTH_TOKEN
+        Start-Job -ScriptBlock { ngrok tcp 3389 }
+        Start-Sleep -Seconds 10
+        $json = Invoke-RestMethod http://localhost:4040/api/tunnels
+        $url = $json.tunnels[0].public_url
+        Write-Host "::notice::RDP ADDRESS: $url"
+        $url | Out-File RDP_CONNECTION.txt
+
+    - name: Enable Windows RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+        net user runneradmin "${{ secrets.VM_PASSWORD }}" /add
+        net localgroup administrators runneradmin /add
+
+    # 4. Keep Alive & Auto-Heal Sync Loop
+    - name: Run & Sync Loop
+      run: |
+        $counter = 0
+        while ($true) {
+          Start-Sleep -Seconds 1800 # Sync every 30 mins
+          
+          # "Save Soul" - Push State to Cloud
+          if (Test-Path rclone.conf) {
+             7z a state.zip C:\EnterpriseState\*
+             rclone copy state.zip remote:backups/ --config rclone.conf --ignore-errors
+             Write-Host "Auto-Heal Checkpoint $counter Saved."
+          } else {
+             Write-Host "No Cloud Config - Running Ephemeral Mode"
+          }
+          $counter++
+        }
