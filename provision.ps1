@@ -82,13 +82,22 @@ start-process explorer
 # 7. Networking & Firewall Hardening
 Write-Host 'Restoring Overlay Access...'
 Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
+
+# DEBUG: List all network interfaces
+Get-NetIPInterface | Select-Object InterfaceAlias, InterfaceIndex, AddressFamily, ConnectionState | Out-String | Write-Host
+
+# Universal Firewall Rules for RDP/SSH (troubleshooting mode)
+New-NetFirewallRule -DisplayName 'Allow-RDP-Global' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'Allow-SSH-Global' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
 $TailscaleInterface = (Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue)
 if ($TailscaleInterface) {
-    New-NetFirewallRule -DisplayName 'Tailscale-RDP-In' -Direction Inbound -LocalPort 3389 -Protocol TCP -InterfaceAlias 'Tailscale' -Action Allow
-    New-NetFirewallRule -DisplayName 'Tailscale-SSH-In' -Direction Inbound -LocalPort 22 -Protocol TCP -InterfaceAlias 'Tailscale' -Action Allow
-    Disable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+    Write-Host "Tailscale interface found. Adding specific rules..." -ForegroundColor Green
+    New-NetFirewallRule -DisplayName 'Tailscale-RDP-In' -Direction Inbound -LocalPort 3389 -Protocol TCP -InterfaceAlias 'Tailscale' -Action Allow -ErrorAction SilentlyContinue
+} else {
+    Write-Host "Tailscale interface NOT found by alias. Using index if possible..." -ForegroundColor Red
 }
 
 # 8. Service Persistence (SSH/Password)
