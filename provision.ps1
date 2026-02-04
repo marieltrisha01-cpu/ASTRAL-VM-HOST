@@ -96,7 +96,7 @@ Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Silen
 Start-Service sshd -ErrorAction SilentlyContinue
 if ($env:VM_PASSWORD) {
     $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force
-    Get-LocalUser -Name 'runneradmin' | Set-LocalPassword -Password $Password
+    Set-LocalUser -Name 'runneradmin' -Password $Password
 }
 
 # 9. Tool Integrity Check
