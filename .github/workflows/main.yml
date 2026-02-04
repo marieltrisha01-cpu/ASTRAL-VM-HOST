@@ -3,9 +3,9 @@ name: Advanced RDP Server (WinServer 2025)
 on:
   workflow_dispatch:
     inputs:
-      duration:
-        description: 'Duration to keep the VM alive (in hours)'
-        required: true
+      duration_hours:
+        description: 'VM Life Duration (Default 6h, Max 6h)'
+        required: false
         default: '6'
 
 jobs:
@@ -15,119 +15,71 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Create State Directory
-        run: |
-          mkdir C:\State
-          echo "Server 2025 State" > C:\State\init.txt
-
-      - name: Restore Persistence Layer
+      - name: Restore Persistent State
         id: restore-state
-        uses: actions/download-artifact@v4
+        uses: actions/cache/restore@v4
         with:
-          name: state
-          path: C:\State_Zips
-        continue-on-error: true
+          path: C:\State
+          key: rdpdev-state-${{ github.run_id }}
+          restore-keys: |
+            rdpdev-state-
 
-      - name: Extract State
-        shell: powershell
+      - name: Setup Profile Structure
         run: |
-          if (Test-Path "C:\State_Zips\state.zip") {
-            Write-Host "Restoring state from previous session..."
-            Expand-Archive -Path "C:\State_Zips\state.zip" -DestinationPath "C:\State" -Force
-          } else {
-            Write-Host "No previous state found. Starting fresh."
-          }
+          if (!(Test-Path C:\State)) { New-Item -Path C:\State -ItemType Directory }
+          if (!(Test-Path C:\State\Profile)) { New-Item -Path C:\State\Profile -ItemType Directory }
 
       - name: Install Tailscale
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
-          Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/quiet" -Wait
+          curl.exe -L https://pkgs.tailscale.com/stable/tailscale-setup64.exe -o tailscale-setup.exe
+          start-process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
           $env:Path += ";C:\Program Files\Tailscale"
-          tailscale version
+          tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname gh-win-server-2025
 
-      - name: Connect to Tailscale
-        id: tailscale-auth
-        shell: powershell
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-        run: |
-          tailscale up --authkey "$env:TAILSCALE_AUTHKEY" --hostname "gh-win-server-2025" --accept-routes
-
-      - name: Run Provisioning Script
+      - name: Provision Environment
         shell: powershell
         env:
           VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           ./provision.ps1
+          # Ansible verification (idempotent)
+          ansible-playbook site.yml
 
-      - name: VM Status & Connection Info
+      - name: Keep VM Alive & Auto-Checkpoint
         shell: powershell
         run: |
-          $ip = tailscale ip -4
-          Write-Host "==========================================" -ForegroundColor Cyan
-          Write-Host "SERVER 2025 IS READY" -ForegroundColor Cyan
-          Write-Host "Tailscale IP: $ip" -ForegroundColor Yellow
-          Write-Host "Hostname: gh-win-server-2025" -ForegroundColor Yellow
-          Write-Host "Username: runneradmin" -ForegroundColor Yellow
-          Write-Host "Access via RDP or SSH using Tailscale IP" -ForegroundColor White
-          Write-Host "==========================================" -ForegroundColor Cyan
-
-      - name: Keep VM Alive
-        shell: powershell
-        run: |
-          $hours = [int]${{ github.event.inputs.duration }}
-          $endTime = (Get-Date).AddHours($hours)
-          Write-Host "VM will stay alive until $endTime (approx $hours hours)"
-          
-          while ((Get-Date) -lt $endTime) {
-            $status = tailscale status --json | ConvertFrom-Json
-            if ($status.BackendState -ne "Running") {
-               Write-Host "Tailscale disconnected! Reconnecting..." -ForegroundColor Yellow
-               tailscale up --authkey "${{ secrets.TAILSCALE_AUTHKEY }}" --hostname "gh-win-server-2025"
-            }
-            Start-Sleep -Seconds 60
+          Write-Host "VM remains active for ${{ github.event.inputs.duration_hours }} hours."
+          $totalSeconds = [int]${{ github.event.inputs.duration_hours }} * 3600
+          $elapsed = 0
+          while ($elapsed -lt $totalSeconds) {
+              # Check for user logout or activity here if needed
+              # Heartbeat to Tailscale to prevent disconnect
+              tailscale status > $null
+              Start-Sleep -Seconds 60
+              $elapsed += 60
+              
+              # Warning: GHA 6-hour hard limit
+              if ($elapsed -ge 21000) { # 5h 50m warning
+                Write-Host "CRITICAL: 10 MINUTES UNTIL GHA HARD TIMEOUT. FINALIZE WORK." -ForegroundColor Red
+              }
           }
 
-      - name: Install Rclone
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "rclone.zip"
-          Expand-Archive -Path "rclone.zip" -DestinationPath "C:\rclone"
-          Move-Item "C:\rclone\rclone-*-windows-amd64\rclone.exe" "C:\Windows\System32\rclone.exe"
-          rclone version
-
-      - name: Restore from Remote Cloud (Optional)
-        shell: powershell
-        env:
-          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          if ($env:RCLONE_CONFIG_DATA) {
-            $configPath = "$HOME\.config\rclone\rclone.conf"
-            New-Item -Path (Split-Path $configPath) -ItemType Directory -Force
-            $env:RCLONE_CONFIG_DATA | Out-File $configPath -Encoding utf8
-            Write-Host "Syncing from remote cloud..."
-            rclone sync "remote:rdpdev-state" "C:\State" -v
-          }
-
-      - name: Teardown & Multi-Cloud Backup
+      - name: Finalize & Backup State
         if: always()
-        shell: powershell
-        env:
-          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
-        run: |
-          Write-Host "Creating session snapshot..."
-          Compress-Archive -Path "C:\State\*" -DestinationPath "C:\state.zip" -Force
-          
-          if ($env:RCLONE_CONFIG_DATA) {
-            Write-Host "Mirroring state to remote cloud..."
-            rclone sync "C:\State" "remote:rdpdev-state" -v
-          }
-
-      - name: Upload GitHub Artifact
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: state
-          path: C:\state.zip
-          retention-days: 7
+          path: C:\State
+          key: rdpdev-state-${{ github.run_id }}
+
+      - name: Remote Cloud Mirror (Rclone)
+        if: always()
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
+        run: |
+          if ("$env:RCLONE_CONFIG_DATA") {
+            ./scripts/rclone-sync.ps1
+          } else {
+            Write-Host "Skipping cloud mirror: RCLONE_CONFIG_DATA not set."
+          }
