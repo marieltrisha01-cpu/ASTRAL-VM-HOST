@@ -30,7 +30,7 @@ jobs:
         run: |
           winget install --id Tailscale.Tailscale --accept-package-agreements --accept-source-agreements --silent
           Start-Sleep -Seconds 5
-          & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey "$env:TAILSCALE_AUTH_KEY" --hostname "gh-win-server-2025"
+          & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey "$env:TAILSCALE_AUTH_KEY" --hostname "gh-win-server-2025" --accept-routes
           & 'C:\Program Files\Tailscale\tailscale.exe' status
 
       - name: Provision Environment
@@ -41,13 +41,24 @@ jobs:
       - name: Keep VM Alive & Auto-Checkpoint
         shell: powershell
         run: |
-          Write-Host "VM active. Safety duration set to 5h 50m to ensure state save."
+          Write-Host "VM active. Self-Healing Active (Check every 60s)."
           $startTime = Get-Date
           while ((Get-Date) -lt $startTime.AddMinutes(350)) {
+              # 1. Connectivity Check
               & 'C:\Program Files\Tailscale\tailscale.exe' status > $null
-              if ($LASTEXITCODE -ne 0) { Write-Host "Overlay reset detected. Re-logging..." }
-              Start-Sleep -Seconds 1800
-              ./scripts/rclone-sync.ps1
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "Tailscale disconnected. Attempting auto-reconnect..." -ForegroundColor Yellow
+                  & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey "$env:TAILSCALE_AUTH_KEY" --hostname "gh-win-server-2025" --accept-routes
+              }
+              
+              # 2. Checkpoint Logic (Every 30 Minutes)
+              $elapsed = ((Get-Date) - $startTime).TotalMinutes
+              if ([int]$elapsed % 30 -eq 0) {
+                  Write-Host "Performing periodic cloud checkpoint..." -ForegroundColor Cyan
+                  ./scripts/rclone-sync.ps1
+              }
+              
+              Start-Sleep -Seconds 60
           }
 
       - name: Finalize & Backup State
