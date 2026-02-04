@@ -44,6 +44,14 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
           Start-Process -FilePath "tailscale-setup.exe" -ArgumentList "/quiet", "/norestart" -Wait
           "C:\Program Files\Tailscale" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          if (Test-Path "C:\State\server-state.conf") {
+            Write-Host "Restoring Tailscale Identity..."
+            Stop-Service Tailscale
+            Copy-Item "C:\State\server-state.conf" "C:\ProgramData\Tailscale\server-state.conf" -Force
+            Start-Service Tailscale
+          }
+          
           & "C:\Program Files\Tailscale\tailscale.exe" version
 
       - name: Connect to Tailscale
@@ -115,6 +123,11 @@ jobs:
         env:
           RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
         run: |
+          Write-Host "Backing up Tailscale Identity..."
+          if (Test-Path "C:\ProgramData\Tailscale\server-state.conf") {
+             Copy-Item "C:\ProgramData\Tailscale\server-state.conf" "C:\State\server-state.conf" -Force
+          }
+
           Write-Host "Creating session snapshot..."
           Compress-Archive -Path "C:\State\*" -DestinationPath "C:\state.zip" -Force
           
@@ -130,3 +143,5 @@ jobs:
           name: state
           path: C:\state.zip
           retention-days: 7
+
+
