@@ -1,0 +1,16 @@
+---
+- name: Provision Windows Server 2025
+  hosts: localhost
+  tasks:
+    - name: Ensure Git is installed via WinGet
+      win_shell: winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+      
+    - name: Ensure VS Code is installed via WinGet
+      win_shell: winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements
+
+    - name: Set PowerShell as default SSH shell
+      win_regedit:
+        path: HKLM:\SOFTWARE\OpenSSH
+        name: DefaultShell
+        data: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+        type: string
