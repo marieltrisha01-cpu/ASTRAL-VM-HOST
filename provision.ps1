@@ -99,8 +99,17 @@ New-NetFirewallRule -DisplayName "Tailscale-Subnet-Trust" -Direction Inbound -Re
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
 # Verification: Is the port listening?
-Write-Host "Checking if ports are listening..."
-netstat -an | Select-String "3389|22" | Out-String | Write-Host
+Write-Host "Checking if ports are listening... (Netstat Audit)"
+netstat -an | Select-String "LISTENING" | Select-String "3389|22|8080" | Out-String | Write-Host
+
+# 7.1 dummy listener for raw connectivity test
+$Listener = [System.Net.Sockets.TcpListener]8080
+try {
+    $Listener.Start()
+    Write-Host "Dummy listener started on port 8080" -ForegroundColor Green
+} catch {
+    Write-Host "Failed to start dummy listener: $_" -ForegroundColor Red
+}
 
 $TailscaleInterface = (Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue)
 if ($TailscaleInterface) {
@@ -110,6 +119,7 @@ if ($TailscaleInterface) {
 }
 
 # 8. Service Persistence (SSH/Password)
+Write-Host "Configuring Services and Users..."
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction SilentlyContinue
 Start-Service sshd -ErrorAction SilentlyContinue
 if ($env:VM_PASSWORD) {
@@ -124,6 +134,15 @@ if ($env:VM_PASSWORD) {
 
 # 8.1 Robust RDP Enablement
 Write-Host "Performing robust RDP enablement..."
+# Ensure RDS services are started and on Automatic
+Set-Service TermService -StartupType Automatic -ErrorAction SilentlyContinue
+Set-Service SessionEnv -StartupType Automatic -ErrorAction SilentlyContinue
+Set-Service UmRdpService -StartupType Automatic -ErrorAction SilentlyContinue
+
+Start-Service TermService -ErrorAction SilentlyContinue
+Start-Service SessionEnv -ErrorAction SilentlyContinue
+Start-Service UmRdpService -ErrorAction SilentlyContinue
+
 (Get-WmiObject -Class Win32_TerminalServiceSetting -Namespace root\cimv2\TerminalServices).SetAllowTSConnections(1,1) | Out-Null
 Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
 Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
@@ -132,8 +151,9 @@ Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\W
 # Restart RDP Services to apply changes
 Restart-Service TermService -Force -ErrorAction SilentlyContinue
 
-Write-Host "RDP Service Status:"
-Get-Service TermService | Select-Object Status, DisplayName | Out-String | Write-Host
+Write-Host "Final Port/Service Audit:"
+Get-Service TermService, SessionEnv, UmRdpService | Select-Object Status, Name | Out-String | Write-Host
+netstat -an | Select-String "3389|22|8080" | Out-String | Write-Host
 
 # 9. Tool Integrity Check
 $Tools = @('7zip.7zip', 'Git.Git', 'Google.Chrome', 'Microsoft.VisualStudioCode', 'rclone.rclone')
