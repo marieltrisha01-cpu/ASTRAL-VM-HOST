@@ -38,10 +38,11 @@ This document serves as the official technical specification for the **Zero-Cost
 ## 3. Persistence Mechanisms
 
 ### Stateless-to-Stateful Recovery:
-- **How state survives:** State is strictly isolated into `C:\State`. Before process termination, this directory is compressed into `state.zip` and uploaded as a GitHub Artifact.
-- **How rebuild works:** Upon workflow trigger, the runner executes a "Restore" phase that downloads the latest `state.zip`, extracts it, and reapplies the Ansible configuration to verify environment integrity.
+- **How state survives:** State is strictly isolated into `C:\State`. The `provision.ps1` script creates **Directory Junctions** that link standard user folders (Desktop, Documents, Downloads, Chrome User Data) directly into `C:\State`. Before process termination, the entire `C:\State` tree is compressed and uploaded.
+- **How rebuild works:** Upon workflow trigger, the runner executes a "Restore" phase that downloads the latest `state.zip`, extracts it, and then the `provision.ps1` script re-establishes the junctions. This makes the persistence transparent to applications like Chrome.
 - **Where data is stored:** Primary storage is GitHub's global artifact storage (7-day retention default). Secondary storage is a user-configured cloud drive (G-Drive/S3) accessed via Rclone.
 - **Version control:** The infrastructure logic is versioned in Git; data state is versioned by Artifact timestamps.
+- **Chrome Persistence:** By junctioning `AppData\Local\Google\Chrome\User Data`, your open tabs, history, and session tokens are preserved. *Note: Passwords may occasionally require re-entry due to DPAPI machine-key variations.*
 
 ## 4. Step-by-Step Deployment Blueprint
 
