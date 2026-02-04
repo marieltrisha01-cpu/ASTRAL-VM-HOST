@@ -88,16 +88,25 @@ Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\W
 Get-NetIPInterface | Select-Object InterfaceAlias, InterfaceIndex, AddressFamily, ConnectionState | Out-String | Write-Host
 
 # Universal Firewall Rules for RDP/SSH (troubleshooting mode)
-New-NetFirewallRule -DisplayName 'Allow-RDP-Global' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'Allow-SSH-Global' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue
+Write-Host "Configuring Troubleshooting Firewall Rules..."
+Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False # TROUBLESHOOTING ONLY
+New-NetFirewallRule -DisplayName 'Allow-RDP-Global' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -Profile Any -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName 'Allow-SSH-Global' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow -Profile Any -ErrorAction SilentlyContinue
+
+# Explicitly trust Tailscale subnet
+New-NetFirewallRule -DisplayName "Tailscale-Subnet-Trust" -Direction Inbound -RemoteAddress "100.64.0.0/10" -Action Allow -Profile Any -ErrorAction SilentlyContinue
+
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+
+# Verification: Is the port listening?
+Write-Host "Checking if ports are listening..."
+netstat -an | Select-String "3389|22" | Out-String | Write-Host
 
 $TailscaleInterface = (Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue)
 if ($TailscaleInterface) {
-    Write-Host "Tailscale interface found. Adding specific rules..." -ForegroundColor Green
-    New-NetFirewallRule -DisplayName 'Tailscale-RDP-In' -Direction Inbound -LocalPort 3389 -Protocol TCP -InterfaceAlias 'Tailscale' -Action Allow -ErrorAction SilentlyContinue
+    Write-Host "Tailscale interface found. Index: $($TailscaleInterface.InterfaceIndex)" -ForegroundColor Green
 } else {
-    Write-Host "Tailscale interface NOT found by alias. Using index if possible..." -ForegroundColor Red
+    Write-Host "Tailscale interface NOT found by alias." -ForegroundColor Red
 }
 
 # 8. Service Persistence (SSH/Password)
