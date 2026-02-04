@@ -69,7 +69,7 @@ jobs:
             Write-Error "TAILSCALE_AUTHKEY environment variable is missing!"
             exit 1
           }
-          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey=""$env:TAILSCALE_AUTHKEY"" --hostname=""gh-win-server-2025"" --accept-routes --ssh --advertise-exit-node" -NoNewWindow -Wait
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey=""$env:TAILSCALE_AUTHKEY"" --hostname=""gh-win-server-2025"" --accept-routes --advertise-exit-node" -NoNewWindow -Wait
 
       - name: Run Provisioning Script
         shell: powershell
