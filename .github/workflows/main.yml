@@ -60,7 +60,7 @@ jobs:
       - name: Connect to Tailscale
         shell: powershell
         env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="gh-win-server-2025" --accept-routes --ssh --advertise-exit-node
 
