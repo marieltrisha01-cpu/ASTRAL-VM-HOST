@@ -110,7 +110,7 @@ if ($env:VM_PASSWORD) {
 }
 
 # 8. Install Base Tools via WinGet
-$Tools = @("7zip.7zip", "Git.Git", "Google.Chrome", "Microsoft.VisualStudioCode")
+$Tools = @("7zip.7zip", "Git.Git", "Google.Chrome", "Microsoft.VisualStudioCode", "rclone.rclone")
 foreach ($Tool in $Tools) {
     winget install --id $Tool --accept-package-agreements --accept-source-agreements --silent --force
 }
