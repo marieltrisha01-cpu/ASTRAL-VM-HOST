@@ -2,81 +2,52 @@ name: Advanced RDP Server (WinServer 2025)
 
 on:
   workflow_dispatch:
-    inputs:
-      duration_hours:
-        description: 'VM Life Duration (Default 6h, Max 6h)'
-        required: false
-        default: '6'
 
 jobs:
   deploy:
     runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Restore Persistent State
-        id: restore-state
-        uses: actions/cache/restore@v4
+      - name: Restore Persistence Cache
+        uses: actions/cache@v4
         with:
           path: C:\State
-          key: rdpdev-state-${{ github.run_id }}
+          key: rdp-state-${{ github.run_id }}
           restore-keys: |
-            rdpdev-state-
-
-      - name: Setup Profile Structure
-        run: |
-          if (!(Test-Path C:\State)) { New-Item -Path C:\State -ItemType Directory }
-          if (!(Test-Path C:\State\Profile)) { New-Item -Path C:\State\Profile -ItemType Directory }
+            rdp-state-
 
       - name: Install Tailscale
         shell: powershell
         run: |
-          # Use WinGet for a guaranteed valid installer
           winget install --id Tailscale.Tailscale --accept-package-agreements --accept-source-agreements --silent
-          
-          # Force the path update so the 'tailscale' command is found immediately
-          $env:Path += ";C:\Program Files\Tailscale"
-          
-          # Verify installation
-          tailscale --version
-          
-          # Authenticate
-          tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname gh-win-server-2025
+          Start-Sleep -Seconds 5
+          & 'C:\Program Files\Tailscale\tailscale.exe' up --authkey "$env:TAILSCALE_AUTH_KEY" --hostname "gh-win-server-2025"
+          & 'C:\Program Files\Tailscale\tailscale.exe' status
 
       - name: Provision Environment
         shell: powershell
-        env:
-          VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           ./provision.ps1
 
       - name: Keep VM Alive & Auto-Checkpoint
         shell: powershell
-        env:
-          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
         run: |
           Write-Host "VM active. Safety duration set to 5h 50m to ensure state save."
-          $maxSeconds = 21000 # 5h 50m
-          $elapsed = 0
-          while ($elapsed -lt $maxSeconds) {
-              tailscale status > $null
-              
-              # Periodic Cloud Checkpoint (Every 30 mins)
-              if ($elapsed -gt 0 -and ($elapsed % 1800) -eq 0) {
-                  Write-Host "Triggering Periodic Checkpoint..." -ForegroundColor Cyan
-                  if ($env:RCLONE_CONFIG_DATA) {
-                    ./scripts/rclone-sync.ps1
-                  }
-              }
-
-              Start-Sleep -Seconds 60
-              $elapsed += 60
-              
-              if ($elapsed -ge 20400) { # 5h 40m warning
-                Write-Host "CRITICAL: 10 MINUTES UNTIL AUTO-CHECKPOINT & SHUTDOWN." -ForegroundColor Red
-              }
+          $startTime = Get-Date
+          while ((Get-Date) -lt $startTime.AddMinutes(350)) {
+              & 'C:\Program Files\Tailscale\tailscale.exe' status > $null
+              if ($LASTEXITCODE -ne 0) { Write-Host "Overlay reset detected. Re-logging..." }
+              Start-Sleep -Seconds 1800
+              ./scripts/rclone-sync.ps1
           }
 
       - name: Finalize & Backup State
@@ -84,13 +55,10 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: C:\State
-          key: rdpdev-state-${{ github.run_id }}
+          key: rdp-state-${{ github.run_id }}
 
       - name: Remote Cloud Mirror (Final)
         if: always()
-        env:
-          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
+        shell: powershell
         run: |
-          if ("$env:RCLONE_CONFIG_DATA") {
-            ./scripts/rclone-sync.ps1
-          }
+          ./scripts/rclone-sync.ps1
