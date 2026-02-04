@@ -8,6 +8,9 @@ on:
         required: true
         default: '6'
 
+
+permissions: write-all
+
 jobs:
   deploy:
     runs-on: windows-2025
