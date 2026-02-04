@@ -104,9 +104,27 @@ if ($TailscaleInterface) {
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction SilentlyContinue
 Start-Service sshd -ErrorAction SilentlyContinue
 if ($env:VM_PASSWORD) {
+    Write-Host "Setting password for runneradmin..."
     $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force
     Set-LocalUser -Name 'runneradmin' -Password $Password
+    
+    # Ensure runneradmin is in Remote Desktop Users and Administrators
+    Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue
+    Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue
 }
+
+# 8.1 Robust RDP Enablement
+Write-Host "Performing robust RDP enablement..."
+(Get-WmiObject -Class Win32_TerminalServiceSetting -Namespace root\cimv2\TerminalServices).SetAllowTSConnections(1,1) | Out-Null
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0
+
+# Restart RDP Services to apply changes
+Restart-Service TermService -Force -ErrorAction SilentlyContinue
+
+Write-Host "RDP Service Status:"
+Get-Service TermService | Select-Object Status, DisplayName | Out-String | Write-Host
 
 # 9. Tool Integrity Check
 $Tools = @('7zip.7zip', 'Git.Git', 'Google.Chrome', 'Microsoft.VisualStudioCode', 'rclone.rclone')
