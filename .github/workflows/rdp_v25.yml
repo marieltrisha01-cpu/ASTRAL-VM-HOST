@@ -1,0 +1,157 @@
+name: Advanced RDP Server (WinServer 2025)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duration to keep the VM alive (in hours)'
+        required: true
+        default: '6'
+
+
+permissions: write-all
+
+jobs:
+  deploy:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Create State Directory
+        run: |
+          mkdir C:\State
+          echo "Server 2025 State" > C:\State\init.txt
+
+      - name: Restore Persistence Layer
+        id: restore-state
+        uses: actions/download-artifact@v4
+        with:
+          name: state
+          path: C:\State_Zips
+        continue-on-error: true
+
+      - name: Extract State
+        shell: powershell
+        run: |
+          if (Test-Path "C:\State_Zips\state.zip") {
+            Write-Host "Restoring state from previous session..."
+            Expand-Archive -Path "C:\State_Zips\state.zip" -DestinationPath "C:\State" -Force
+          } else {
+            Write-Host "No previous state found. Starting fresh."
+          }
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
+          Start-Process -FilePath "tailscale-setup.exe" -ArgumentList "/quiet", "/norestart" -Wait
+          "C:\Program Files\Tailscale" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          if (Test-Path "C:\State\server-state.conf") {
+            Write-Host "Restoring Tailscale Identity..."
+            Stop-Service Tailscale
+            Copy-Item "C:\State\server-state.conf" "C:\ProgramData\Tailscale\server-state.conf" -Force
+            Start-Service Tailscale
+          }
+          
+          & "C:\Program Files\Tailscale\tailscale.exe" version
+
+      - name: Connect to Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Write-Host "Checking Tailscale Auth Key..."
+          if ($env:TAILSCALE_AUTHKEY) {
+            Write-Host "Auth Key is present. Length: $($env:TAILSCALE_AUTHKEY.Length)"
+          } else {
+            Write-Error "TAILSCALE_AUTHKEY environment variable is missing!"
+            exit 1
+          }
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey=""$env:TAILSCALE_AUTHKEY"" --hostname=""gh-win-server-2025"" --accept-routes --advertise-exit-node" -NoNewWindow -Wait
+
+      - name: Run Provisioning Script
+        shell: powershell
+        env:
+          VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
+        run: |
+          ./provision.ps1
+
+      - name: VM Status & Connection Info
+        shell: powershell
+        run: |
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "==========================================" -ForegroundColor Cyan
+          Write-Host "SERVER 2025 IS READY" -ForegroundColor Cyan
+          Write-Host "Tailscale IP: $ip" -ForegroundColor Yellow
+          Write-Host "Hostname: gh-win-server-2025" -ForegroundColor Yellow
+          Write-Host "Username: runneradmin" -ForegroundColor Yellow
+          Write-Host "Access via RDP or SSH using Tailscale IP" -ForegroundColor White
+          Write-Host "==========================================" -ForegroundColor Cyan
+
+      - name: Keep VM Alive
+        shell: powershell
+        run: |
+          $hours = [int]${{ github.event.inputs.duration }}
+          $endTime = (Get-Date).AddHours($hours)
+          Write-Host "VM will stay alive until $endTime (approx $hours hours)"
+          
+          while ((Get-Date) -lt $endTime) {
+            $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+            if ($status.BackendState -ne "Running") {
+               Write-Host "Tailscale disconnected! Reconnecting..." -ForegroundColor Yellow
+               & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" --hostname="gh-win-server-2025"
+            }
+            Start-Sleep -Seconds 60
+          }
+
+      - name: Install Rclone
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile "rclone.zip"
+          Expand-Archive -Path "rclone.zip" -DestinationPath "C:\rclone"
+          Move-Item "C:\rclone\rclone-*-windows-amd64\rclone.exe" "C:\Windows\System32\rclone.exe"
+          rclone version
+
+      - name: Restore from Remote Cloud (Optional)
+        shell: powershell
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          if ($env:RCLONE_CONFIG_DATA) {
+            $configPath = "$HOME\.config\rclone\rclone.conf"
+            New-Item -Path (Split-Path $configPath) -ItemType Directory -Force
+            $env:RCLONE_CONFIG_DATA | Out-File $configPath -Encoding utf8
+            Write-Host "Syncing from remote cloud..."
+            rclone sync "remote:rdpdev-state" "C:\State" -v
+          }
+
+      - name: Teardown & Multi-Cloud Backup
+        if: always()
+        shell: powershell
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          Write-Host "Backing up Tailscale Identity..."
+          if (Test-Path "C:\ProgramData\Tailscale\server-state.conf") {
+             Copy-Item "C:\ProgramData\Tailscale\server-state.conf" "C:\State\server-state.conf" -Force
+          }
+
+          Write-Host "Creating session snapshot..."
+          Compress-Archive -Path "C:\State\*" -DestinationPath "C:\state.zip" -Force
+          
+          if ($env:RCLONE_CONFIG_DATA) {
+            Write-Host "Mirroring state to remote cloud..."
+            rclone sync "C:\State" "remote:rdpdev-state" -v
+          }
+
+      - name: Upload GitHub Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state
+          path: C:\state.zip
+          retention-days: 7
+
+
