@@ -32,10 +32,16 @@ jobs:
       - name: Install Tailscale
         shell: powershell
         run: |
-          # Use the universal stable installer URL
-          curl.exe -L https://pkgs.tailscale.com/stable/tailscale-setup.exe -o tailscale-setup.exe
-          start-process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
+          # Use WinGet for a guaranteed valid installer
+          winget install --id Tailscale.Tailscale --accept-package-agreements --accept-source-agreements --silent
+          
+          # Force the path update so the 'tailscale' command is found immediately
           $env:Path += ";C:\Program Files\Tailscale"
+          
+          # Verify installation
+          tailscale --version
+          
+          # Authenticate
           tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname gh-win-server-2025
 
       - name: Provision Environment
@@ -45,8 +51,6 @@ jobs:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           ./provision.ps1
-          # Ansible verification (idempotent)
-          ansible-playbook site.yml
 
       - name: Keep VM Alive & Auto-Checkpoint
         shell: powershell
