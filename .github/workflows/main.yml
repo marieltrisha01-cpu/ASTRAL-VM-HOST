@@ -49,20 +49,28 @@ jobs:
 
       - name: Keep VM Alive & Auto-Checkpoint
         shell: powershell
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
         run: |
-          Write-Host "VM remains active for ${{ github.event.inputs.duration_hours }} hours."
-          $totalSeconds = [int]${{ github.event.inputs.duration_hours }} * 3600
+          Write-Host "VM active. Safety duration set to 5h 50m to ensure state save."
+          $maxSeconds = 21000 # 5h 50m
           $elapsed = 0
-          while ($elapsed -lt $totalSeconds) {
-              # Check for user logout or activity here if needed
-              # Heartbeat to Tailscale to prevent disconnect
+          while ($elapsed -lt $maxSeconds) {
               tailscale status > $null
+              
+              # Periodic Cloud Checkpoint (Every 30 mins)
+              if ($elapsed -gt 0 -and ($elapsed % 1800) -eq 0) {
+                  Write-Host "Triggering Periodic Checkpoint..." -ForegroundColor Cyan
+                  if ($env:RCLONE_CONFIG_DATA) {
+                    ./scripts/rclone-sync.ps1
+                  }
+              }
+
               Start-Sleep -Seconds 60
               $elapsed += 60
               
-              # Warning: GHA 6-hour hard limit
-              if ($elapsed -ge 21000) { # 5h 50m warning
-                Write-Host "CRITICAL: 10 MINUTES UNTIL GHA HARD TIMEOUT. FINALIZE WORK." -ForegroundColor Red
+              if ($elapsed -ge 20400) { # 5h 40m warning
+                Write-Host "CRITICAL: 10 MINUTES UNTIL AUTO-CHECKPOINT & SHUTDOWN." -ForegroundColor Red
               }
           }
 
@@ -73,13 +81,11 @@ jobs:
           path: C:\State
           key: rdpdev-state-${{ github.run_id }}
 
-      - name: Remote Cloud Mirror (Rclone)
+      - name: Remote Cloud Mirror (Final)
         if: always()
         env:
           RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG_DATA }}
         run: |
           if ("$env:RCLONE_CONFIG_DATA") {
             ./scripts/rclone-sync.ps1
-          } else {
-            Write-Host "Skipping cloud mirror: RCLONE_CONFIG_DATA not set."
           }
