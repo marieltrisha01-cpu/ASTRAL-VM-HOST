@@ -36,13 +36,13 @@ jobs:
           curl.exe -L https://pkgs.tailscale.com/stable/tailscale-setup.exe -o tailscale-setup.exe
           start-process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
           $env:Path += ";C:\Program Files\Tailscale"
-          tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname gh-win-server-2025
+          tailscale up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --hostname gh-win-server-2025
 
       - name: Provision Environment
         shell: powershell
         env:
           VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           ./provision.ps1
           # Ansible verification (idempotent)
