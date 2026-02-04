@@ -1,290 +1,157 @@
-name: Stealth VM - Free Windows RDP
+name: Stealth VM (RDP + Auto-Heal)
 
 on:
   workflow_dispatch:
-    inputs:
-      duration:
-        description: 'VM runtime duration in hours (max 6)'
-        required: false
-        default: '5'
-        type: choice
-        options:
-          - '1'
-          - '2'
-          - '3'
-          - '4'
-          - '5'
-          - '6'
   schedule:
-    # Run every 5 hours (stealth: avoid exact 6-hour pattern)
-    - cron: '0 */5 * * *'
-
-env:
-  STATE_PATH: 'C:\EnterpriseState'
-  SYNC_INTERVAL: 1800  # 30 minutes in seconds
-  NGROK_REGION: 'us'
+    - cron: '0 */5 * * *'  # Auto-Heal every 5 hours
 
 jobs:
-  stealth-vm:
+  virtual-machine:
     runs-on: windows-latest
-    timeout-minutes: 350  # Just under 6 hours
-    
+    timeout-minutes: 350
     steps:
-      - name: Initialize - Stealth VM Boot
-        run: |
-          Write-Host "==================================="
-          Write-Host "STEALTH VM INITIALIZATION"
-          Write-Host "==================================="
-          Write-Host "Start Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
-          Write-Host "Runner: $env:RUNNER_NAME"
-          Write-Host "Region: $env:NGROK_REGION"
-          
-      - name: Setup Rclone (Cloud Sync)
-        shell: powershell
-        run: |
-          Write-Host "Downloading Rclone..."
-          $rcloneUrl = "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
-          Invoke-WebRequest -Uri $rcloneUrl -OutFile "rclone.zip"
-          Expand-Archive -Path "rclone.zip" -DestinationPath "C:\rclone" -Force
-          $rclonePath = Get-ChildItem -Path "C:\rclone" -Recurse -Filter "rclone.exe" | Select-Object -First 1
-          Copy-Item $rclonePath.FullName -Destination "C:\Windows\System32\rclone.exe"
-          Write-Host "Rclone installed: $(rclone version)"
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: Configure Cloud Storage
-        shell: powershell
-        env:
-          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG_DATA }}
-        run: |
-          Write-Host "Setting up cloud storage configuration..."
-          $configDir = "$env:APPDATA\rclone"
-          New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-          $env:RCLONE_CONFIG | Out-File -FilePath "$configDir\rclone.conf" -Encoding utf8
-          Write-Host "Cloud storage configured"
-          
-      - name: Restore State (Auto-Heal)
-        shell: powershell
-        run: |
-          Write-Host "Checking for existing state..."
-          $statePath = "$env:STATE_PATH"
-          
-          try {
-            # Try to download state.zip from cloud
-            rclone copy "remote:EnterpriseState/state.zip" "C:\temp" -v
+    # 1. Setup Environment & Tools
+    - name: Install Essentials
+      run: |
+        choco install rclone -y
+        pip install py7zr
+        
+    # 2. "Resurrection" - Pull State from Cloud
+    - name: Restore Soul (State)
+      env:
+        RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
+        RCLONE_CONFIG_BLOB: ${{ secrets.RCLONE_CONFIG_BLOB }}
+      run: |
+        # Configure rclone from secret blob
+        if ($env:RCLONE_CONFIG_BLOB) {
+            $env:RCLONE_CONFIG_BLOB | Out-File -Encoding UTF8 rclone.conf
+        }
+        mkdir C:\EnterpriseState -ErrorAction SilentlyContinue
+        
+        # Download state.zip (e.g. from TeraBox/GDrive alias 'remote')
+        if (Test-Path rclone.conf) {
+            rclone copy remote:backups/state.zip . --config rclone.conf --ignore-errors
+        }
+        
+        # Unzip if exists
+        if (Test-Path state.zip) {
+          7z x state.zip -oC:\EnterpriseState
+        } else {
+          Write-Host "New Life Started."
+        }
+
+    # 3. Enable RDP & Ngrok Tunnel (Debug Mode + Shim Fix)
+    - name: Start Ngrok Tunnel
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      run: |
+        choco install ngrok -y
+        
+        if (-not $env:NGROK_AUTH_TOKEN) {
+            Write-Host "::error title=Missing Secret::NGROK_AUTH_TOKEN is missing! Add it in Settings > Secrets."
+            exit 1
+        }
+        
+        # 1. Bruteforce Find Real Ngrok (Bypass Choco Shim)
+        # Shims exit immediately, causing "Process DIED" errors. We need the real binary.
+        $ngrokPath = Get-ChildItem "C:\ProgramData\chocolatey\lib\ngrok\tools\ngrok*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName -First 1
+        
+        if (-not $ngrokPath) {
+             # Fallback to standard path if lib search fails
+             $ngrokPath = (Get-Command ngrok -ErrorAction SilentlyContinue).Source
+        }
+        
+        Write-Host "::notice title=Ngrok Path::Targeting Real Binary: $ngrokPath"
+        
+        if (-not $ngrokPath -or -not (Test-Path $ngrokPath)) {
+             Write-Host "::error title=Ngrok Not Found::Could not find ngrok.exe in standard paths."
+             exit 1
+        }
+
+        # 2. Authenticate
+        & $ngrokPath authtoken $env:NGROK_AUTH_TOKEN
+        
+        # 3. Start Process with Explicit Log Output
+        $logPath = Join-Path $pwd "ngrok.log"
+        $errPath = Join-Path $pwd "ngrok_error.log"
+        
+        Write-Host "Starting Ngrok..."
+        $p = Start-Process -FilePath $ngrokPath -ArgumentList "tcp 3389 --log=stdout" -PassThru -RedirectStandardOutput $logPath -RedirectStandardError $errPath -WindowStyle Hidden
+        
+        # 4. Wait for Tunnel (Loop with Debug Checks)
+        $url = $null
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
             
-            if (Test-Path "C:\temp\state.zip") {
-              Write-Host "State found! Restoring..."
-              Expand-Archive -Path "C:\temp\state.zip" -DestinationPath $statePath -Force
-              Write-Host "State restored successfully"
-              Write-Host "Contents:"
-              Get-ChildItem -Path $statePath -Recurse | Select-Object FullName, Length, LastWriteTime | Format-Table
-            } else {
-              Write-Host "No previous state found. Initializing fresh..."
-              New-Item -ItemType Directory -Path $statePath -Force | Out-Null
-              "VM initialized at $(Get-Date)" | Out-File "$statePath\init.txt"
+            # Check if process died
+            if ($p.HasExited) {
+                Write-Host "::error title=Ngrok Crashed::Process exited unexpectedly."
+                
+                if (Test-Path $logPath) { 
+                    $logContent = Get-Content $logPath | Out-String
+                    Write-Host "::error title=Ngrok STDOUT::$logContent"
+                }
+                if (Test-Path $errPath) { 
+                    $errContent = Get-Content $errPath | Out-String
+                    Write-Host "::error title=Ngrok STDERR::$errContent"
+                }
+                exit 1
             }
-          } catch {
-            Write-Host "State restore failed: $_"
-            Write-Host "Creating fresh state..."
-            New-Item -ItemType Directory -Path $statePath -Force | Out-Null
-            "VM initialized at $(Get-Date)" | Out-File "$statePath\init.txt"
+
+            # Check API for Tunnel URL
+            try {
+                $json = Invoke-RestMethod http://localhost:4040/api/tunnels -ErrorAction SilentlyContinue
+                $url = $json.tunnels[0].public_url
+                if ($url) { break }
+            } catch {
+                Write-Host "Waiting for API... ($i/30)"
+            }
+        }
+
+        if (-not $url) {
+            Write-Host "::error title=Timeout::Could not get RDP address from Ngrok API."
+            exit 1
+        }
+
+        # SUCCESS: Print to Summary Page
+        Write-Host "::notice title=RDP SUCCESS::Address: $url"
+        $url | Out-File RDP_CONNECTION.txt
+
+    - name: Enable Windows RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+        net user runneradmin "${{ secrets.VM_PASSWORD }}" /add
+        net localgroup administrators runneradmin /add
+
+    # 4. Always Upload Logs (For Debugging)
+    - name: Upload Debug Logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-logs
+        path: |
+          *.log
+          RDP_CONNECTION.txt
+
+    # 5. Keep Alive & Auto-Heal Sync Loop
+    - name: Run & Sync Loop
+      run: |
+        $counter = 0
+        while ($true) {
+          Start-Sleep -Seconds 1800 # Sync every 30 mins
+          
+          # "Save Soul" - Push State to Cloud
+          if (Test-Path rclone.conf) {
+             7z a state.zip C:\EnterpriseState\*
+             rclone copy state.zip remote:backups/ --config rclone.conf --ignore-errors
+             Write-Host "Auto-Heal Checkpoint $counter Saved."
+          } else {
+             Write-Host "No Cloud Config - Running Ephemeral Mode"
           }
-
-      - name: Configure Windows RDP
-        shell: powershell
-        env:
-          VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
-        run: |
-          Write-Host "Configuring RDP access..."
-          
-          # Set user password
-          $password = if ($env:VM_PASSWORD) { $env:VM_PASSWORD } else { "StealthVM2026!" }
-          net user runneradmin $password
-          
-          # Enable RDP
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          Write-Host "RDP enabled for user: runneradmin"
-
-      - name: Setup Ngrok Tunnel
-        shell: powershell
-        env:
-          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        run: |
-          Write-Host "Setting up Ngrok tunnel..."
-          
-          # Download Ngrok
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
-          Expand-Archive -Path "ngrok.zip" -DestinationPath "C:\ngrok" -Force
-          
-          # Configure Ngrok
-          & "C:\ngrok\ngrok.exe" config add-authtoken $env:NGROK_AUTH_TOKEN
-          
-          # Start Ngrok tunnel for RDP (port 3389)
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp", "3389", "--region", "$env:NGROK_REGION" -WindowStyle Hidden
-          
-          Write-Host "Waiting for Ngrok to initialize..."
-          Start-Sleep -Seconds 10
-          
-          # Get tunnel URL
-          try {
-            $ngrokApi = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
-            $publicUrl = $ngrokApi.tunnels[0].public_url
-            Write-Host ""
-            Write-Host "=========================================="
-            Write-Host "RDP CONNECTION DETAILS"
-            Write-Host "=========================================="
-            Write-Host "Ngrok URL: $publicUrl"
-            Write-Host "Username: runneradmin"
-            Write-Host "Password: [Check secrets]"
-            Write-Host "=========================================="
-            Write-Host ""
-            
-            # Save connection info to state
-            @{
-              timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC'
-              ngrok_url = $publicUrl
-              username = "runneradmin"
-            } | ConvertTo-Json | Out-File "$env:STATE_PATH\connection_info.json"
-            
-            # Upload connection info immediately
-            rclone copy "$env:STATE_PATH\connection_info.json" "remote:EnterpriseState/" -v
-            
-          } catch {
-            Write-Host "Could not retrieve Ngrok URL: $_"
-          }
-
-      - name: Start Auto-Heal Sync Service
-        shell: powershell
-        run: |
-          Write-Host "Starting auto-heal sync service..."
-          
-          $syncScript = @'
-while ($true) {
-  $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-  Write-Host "[$timestamp] Auto-Heal: Syncing state..."
-  
-  try {
-    # Create state archive
-    $statePath = $env:STATE_PATH
-    $zipPath = "C:\temp\state.zip"
-    
-    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-    Compress-Archive -Path "$statePath\*" -DestinationPath $zipPath -Force
-    
-    # Upload to cloud
-    rclone copy $zipPath "remote:EnterpriseState/" -v
-    
-    $size = (Get-Item $zipPath).Length / 1MB
-    Write-Host "[$timestamp] Sync complete! ($([math]::Round($size, 2)) MB)"
-  } catch {
-    Write-Host "[$timestamp] Sync failed: $_"
-  }
-  
-  # Wait for next sync (30 minutes)
-  Start-Sleep -Seconds $env:SYNC_INTERVAL
-}
-'@
-          
-          $syncScript | Out-File "C:\sync-service.ps1" -Encoding utf8
-          Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\sync-service.ps1" -WindowStyle Hidden
-          Write-Host "Auto-heal sync service started (interval: $env:SYNC_INTERVAL seconds)"
-
-      - name: Stealth Measures
-        shell: powershell
-        run: |
-          Write-Host "Applying stealth measures..."
-          
-          # Random activity to avoid detection patterns
-          $activities = @(
-            "Simulating normal Windows usage...",
-            "Checking for updates...",
-            "Running background tasks...",
-            "Optimizing performance..."
-          )
-          
-          foreach ($activity in $activities) {
-            Write-Host "  -> $activity"
-            Start-Sleep -Seconds (Get-Random -Minimum 2 -Maximum 8)
-          }
-          
-          Write-Host "Stealth measures applied"
-
-      - name: VM Status Monitor
-        shell: powershell
-        run: |
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "VM STATUS DASHBOARD"
-          Write-Host "=========================================="
-          Write-Host "Computer: $env:COMPUTERNAME"
-          Write-Host "OS: $(Get-WmiObject -Class Win32_OperatingSystem | Select-Object -ExpandProperty Caption)"
-          Write-Host "CPU: $(Get-WmiObject -Class Win32_Processor | Select-Object -ExpandProperty Name)"
-          Write-Host "RAM: $([math]::Round((Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)) GB"
-          Write-Host "Disk: $([math]::Round((Get-PSDrive C).Free / 1GB, 2)) GB free"
-          Write-Host "IP: $(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias Ethernet* | Select-Object -ExpandProperty IPAddress -First 1)"
-          Write-Host "=========================================="
-          Write-Host ""
-
-      - name: Keep-Alive Loop
-        shell: powershell
-        run: |
-          Write-Host "Entering keep-alive mode..."
-          Write-Host "VM will remain active for the configured duration"
-          Write-Host "Auto-heal sync running in background every 30 minutes"
-          Write-Host ""
-          Write-Host "WARNING: This VM is ephemeral and will be destroyed after timeout"
-          Write-Host "All state is automatically backed up to cloud storage"
-          Write-Host ""
-          
-          $startTime = Get-Date
-          $duration = if ($env:DURATION) { [int]$env:DURATION } else { 5 }
-          $endTime = $startTime.AddHours($duration)
-          
-          Write-Host "Started: $($startTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-          Write-Host "Will end: $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-          Write-Host ""
-          
-          while ((Get-Date) -lt $endTime) {
-            $remaining = $endTime - (Get-Date)
-            $hours = [math]::Floor($remaining.TotalHours)
-            $minutes = $remaining.Minutes
-            
-            Write-Host "Time remaining: $hours hours, $minutes minutes" -NoNewline
-            Write-Host "`r" -NoNewline
-            
-            Start-Sleep -Seconds 60
-          }
-          
-          Write-Host ""
-          Write-Host "Keep-alive timeout reached. Preparing for graceful shutdown..."
-
-      - name: Final State Backup
-        if: always()
-        shell: powershell
-        run: |
-          Write-Host "Performing final state backup..."
-          
-          try {
-            $zipPath = "C:\temp\state_final.zip"
-            Compress-Archive -Path "$env:STATE_PATH\*" -DestinationPath $zipPath -Force
-            rclone copy $zipPath "remote:EnterpriseState/state.zip" -v
-            Write-Host "Final backup complete!"
-          } catch {
-            Write-Host "Final backup failed: $_"
-          }
-
-      - name: Shutdown Summary
-        if: always()
-        shell: powershell
-        run: |
-          Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "STEALTH VM SHUTDOWN SUMMARY"
-          Write-Host "=========================================="
-          Write-Host "End Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')"
-          Write-Host "State backed up to cloud storage"
-          Write-Host "Next VM will restore from this state"
-          Write-Host "=========================================="
-          Write-Host ""
-          Write-Host "Stealth VM session complete!"
+          $counter++
+        }
