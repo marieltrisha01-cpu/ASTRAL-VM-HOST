@@ -38,12 +38,20 @@ jobs:
             Write-Host "No previous state found. Starting fresh."
           }
 
-      - name: Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: "gh-win-server-2025"
-          args: "--accept-routes"
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
+          Start-Process -FilePath "tailscale-setup.exe" -ArgumentList "/quiet", "/norestart" -Wait
+          $env:Path += ";C:\Program Files\Tailscale"
+          & "C:\Program Files\Tailscale\tailscale.exe" version
+
+      - name: Connect to Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey "$env:TAILSCALE_AUTHKEY" --hostname "gh-win-server-2025" --accept-routes
 
       - name: Run Provisioning Script
         shell: powershell
