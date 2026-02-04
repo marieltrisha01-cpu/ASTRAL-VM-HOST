@@ -62,7 +62,14 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TAILSCALE_AUTHKEY" --hostname="gh-win-server-2025" --accept-routes --ssh --advertise-exit-node
+          Write-Host "Checking Tailscale Auth Key..."
+          if ($env:TAILSCALE_AUTHKEY) {
+            Write-Host "Auth Key is present. Length: $($env:TAILSCALE_AUTHKEY.Length)"
+          } else {
+            Write-Error "TAILSCALE_AUTHKEY environment variable is missing!"
+            exit 1
+          }
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey=""$env:TAILSCALE_AUTHKEY"" --hostname=""gh-win-server-2025"" --accept-routes --ssh --advertise-exit-node" -NoNewWindow -Wait
 
       - name: Run Provisioning Script
         shell: powershell
