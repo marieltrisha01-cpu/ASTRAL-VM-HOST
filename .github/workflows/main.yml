@@ -32,7 +32,8 @@ jobs:
       - name: Install Tailscale
         shell: powershell
         run: |
-          curl.exe -L https://pkgs.tailscale.com/stable/tailscale-setup64.exe -o tailscale-setup.exe
+          # Use the universal stable installer URL
+          curl.exe -L https://pkgs.tailscale.com/stable/tailscale-setup.exe -o tailscale-setup.exe
           start-process -FilePath .\tailscale-setup.exe -ArgumentList "/quiet", "/norestart" -Wait
           $env:Path += ";C:\Program Files\Tailscale"
           tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname gh-win-server-2025
