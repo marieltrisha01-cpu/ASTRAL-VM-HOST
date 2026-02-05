@@ -103,7 +103,8 @@ while ($RetryCount -lt 12) {
         Write-Host "✓ Tailscale Interface detected (Index: $($TailscaleInterface.InterfaceIndex))" -ForegroundColor Green
         break 
     }
-    Write-Host "Waiting for Tailscale interface... ($($RetryCount * 5)s)"
+    $WaitSec = $RetryCount * 5
+    Write-Host "Waiting for Tailscale interface... ($WaitSec seconds)"
     Start-Sleep -Seconds 5
     $RetryCount++
 }
