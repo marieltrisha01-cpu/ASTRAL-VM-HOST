@@ -100,7 +100,7 @@ jobs:
               Set-ItemProperty -Path $ShellFoldersKey -Name $Key -Value $Redirections[$Key] -Force;
           }
 
-          # 3. Junction-Based AppData & System Persistence
+          # 3. Junction-Based AppData & System Persistence (Locked File Resilient)
           $JunctionMaps = @(
               @{ Source = 'AppData\Roaming'; Target = "$ProfileRoot\AppData\Roaming" },
               @{ Source = 'AppData\Local'; Target = "$ProfileRoot\AppData\Local" },
@@ -111,11 +111,28 @@ jobs:
               $TargetPath = $Map.Target;
               if (-not (Test-Path $TargetPath)) { New-Item -Path $TargetPath -ItemType Directory -Force | Out-Null };
               if (Test-Path $SourcePath) {
-                  $Item = Get-Item $SourcePath;
-                  if ($Item.Attributes -notlike '*ReparsePoint*') {
-                      Get-ChildItem -Path $SourcePath | Move-Item -Destination $TargetPath -Force -ErrorAction SilentlyContinue;
-                      Remove-Item $SourcePath -Recurse -Force;
-                      New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force | Out-Null;
+                  $Item = Get-Item $SourcePath -Force -ErrorAction SilentlyContinue;
+                  if ($Item -and $Item.Attributes -notlike '*ReparsePoint*') {
+                      # Move what we can, ignore locked files
+                      Get-ChildItem -Path $SourcePath -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                          try {
+                              Move-Item -Path $_.FullName -Destination $TargetPath -Force -ErrorAction Stop;
+                          } catch {
+                              Write-Host "Skipping locked file: $($_.FullName)";
+                          }
+                      };
+                      # Try to remove source directory, but don't fail if locked files remain
+                      try {
+                          Remove-Item $SourcePath -Recurse -Force -ErrorAction Stop;
+                      } catch {
+                          Write-Host "Could not remove $SourcePath (locked files remaining), forcing junction anyway";
+                          # Forcefully remove the directory attribute to allow junction creation
+                          cmd /c "rmdir /s /q `"$SourcePath`"" 2>$null;
+                      }
+                      # Create junction regardless
+                      if (-not (Test-Path $SourcePath)) {
+                          New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force | Out-Null;
+                      }
                   }
               } else {
                   New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force | Out-Null;
