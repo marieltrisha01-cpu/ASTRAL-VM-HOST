@@ -137,12 +137,8 @@ netstat -an | Select-String "LISTENING" | Select-String "3389|22|8080" | Out-Str
 
 # 8.1 dummy listener for raw connectivity test
 $Listener = [System.Net.Sockets.TcpListener]8080
-try {
-    $Listener.Start()
-    Write-Host "✓ Dummy connectivity listener started on port 8080" -ForegroundColor Green
-} catch {
-    Write-Host "Failed to start dummy listener: $_" -ForegroundColor Red
-}
+$Listener.Start()
+Write-Host "✓ Dummy connectivity listener started on port 8080" -ForegroundColor Green
 
 # 8. Service Persistence (SSH/Password)
 Write-Host "Configuring Services and Users..."
