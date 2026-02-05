@@ -80,42 +80,68 @@ if ($currentPath -notlike ('*' + $StateBin + '*')) {
 start-process explorer
 
 # 7. Networking & Firewall Hardening
-Write-Host 'Restoring Overlay Access...'
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
+Write-Host 'Optimizing Networking for Server 2025 RDP...' -ForegroundColor Cyan
 
-# DEBUG: List all network interfaces
-Get-NetIPInterface | Select-Object InterfaceAlias, InterfaceIndex, AddressFamily, ConnectionState | Out-String | Write-Host
+# 7.1 Protocol & Reliability Registry Tweaks
+$TSPoliciesClient = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client'
+$TSPoliciesServer = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+if (-not (Test-Path $TSPoliciesClient)) { New-Item -Path $TSPoliciesClient -Force }
+if (-not (Test-Path $TSPoliciesServer)) { New-Item -Path $TSPoliciesServer -Force }
 
-# Universal Firewall Rules for RDP/SSH (troubleshooting mode)
-Write-Host "Configuring Troubleshooting Firewall Rules..."
-Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False # TROUBLESHOOTING ONLY
-New-NetFirewallRule -DisplayName 'Allow-RDP-Global' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -Profile Any -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName 'Allow-SSH-Global' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow -Profile Any -ErrorAction SilentlyContinue
+# Disable RDP UDP (Common source of Server 2025 timeouts)
+Set-ItemProperty -Path $TSPoliciesClient -Name 'fClientDisableUDP' -Value 1 -Force
+# Disable Continuous Network Detect (Prevents premature RDP drops)
+Set-ItemProperty -Path $TSPoliciesServer -Name 'SelectNetworkDetect' -Value 0 -Force
 
-# Explicitly trust Tailscale subnet
-New-NetFirewallRule -DisplayName "Tailscale-Subnet-Trust" -Direction Inbound -RemoteAddress "100.64.0.0/10" -Action Allow -Profile Any -ErrorAction SilentlyContinue
+# 7.2 Interface Wait Loop
+Write-Host 'Waiting for Tailscale interface to initialize...' -ForegroundColor Yellow
+$RetryCount = 0
+$TailscaleInterface = $null
+while ($RetryCount -lt 12) {
+    $TailscaleInterface = Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue
+    if ($TailscaleInterface) { 
+        Write-Host "✓ Tailscale Interface detected (Index: $($TailscaleInterface.InterfaceIndex))" -ForegroundColor Green
+        break 
+    }
+    Write-Host "Waiting for Tailscale interface... ($($RetryCount * 5)s)"
+    Start-Sleep -Seconds 5
+    $RetryCount++
+}
 
-Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+# 7.3 "Nuclear" Firewall Rules (High Priority)
+Write-Host 'Applying High-Priority Firewall Overrides...' -ForegroundColor Yellow
+# Disable all profiles temporarily to guarantee access during setup
+Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+
+# Use netsh as definitive fallback for rules
+netsh advfirewall firewall add rule name="RDP-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=3389 profile=any
+netsh advfirewall firewall add rule name="SSH-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=22 profile=any
+netsh advfirewall firewall add rule name="Tailscale-Subnet-Trust" dir=in action=allow remoteip=100.64.0.0/10 profile=any
+
+if ($TailscaleInterface) {
+    New-NetFirewallRule -DisplayName 'Tailscale-Only-RDP' -Direction Inbound -LocalPort 3389 -Protocol TCP -InterfaceAlias 'Tailscale' -Action Allow -Profile Any -Force
+}
+
+# 8. Service Health & RDP Binding
+Write-Host 'Configuring RDP Security & Binding...' -ForegroundColor Cyan
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0 -Force
+
+# Force Listener Recreation / Binding
+Restart-Service TermService -Force -ErrorAction SilentlyContinue
 
 # Verification: Is the port listening?
 Write-Host "Checking if ports are listening... (Netstat Audit)"
 netstat -an | Select-String "LISTENING" | Select-String "3389|22|8080" | Out-String | Write-Host
 
-# 7.1 dummy listener for raw connectivity test
+# 8.1 dummy listener for raw connectivity test
 $Listener = [System.Net.Sockets.TcpListener]8080
 try {
     $Listener.Start()
-    Write-Host "Dummy listener started on port 8080" -ForegroundColor Green
+    Write-Host "✓ Dummy connectivity listener started on port 8080" -ForegroundColor Green
 } catch {
     Write-Host "Failed to start dummy listener: $_" -ForegroundColor Red
-}
-
-$TailscaleInterface = (Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue)
-if ($TailscaleInterface) {
-    Write-Host "Tailscale interface found. Index: $($TailscaleInterface.InterfaceIndex)" -ForegroundColor Green
-} else {
-    Write-Host "Tailscale interface NOT found by alias." -ForegroundColor Red
 }
 
 # 8. Service Persistence (SSH/Password)
@@ -132,24 +158,13 @@ if ($env:VM_PASSWORD) {
     Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue
 }
 
-# 8.1 Robust RDP Enablement
-Write-Host "Performing robust RDP enablement..."
-# Ensure RDS services are started and on Automatic
+# 10. Robust RDP Enablement (Final Pass)
+Write-Host "Performing Final RDP Service Health Check..." -ForegroundColor Cyan
 Set-Service TermService -StartupType Automatic -ErrorAction SilentlyContinue
 Set-Service SessionEnv -StartupType Automatic -ErrorAction SilentlyContinue
 Set-Service UmRdpService -StartupType Automatic -ErrorAction SilentlyContinue
 
-Start-Service TermService -ErrorAction SilentlyContinue
-Start-Service SessionEnv -ErrorAction SilentlyContinue
-Start-Service UmRdpService -ErrorAction SilentlyContinue
-
-(Get-WmiObject -Class Win32_TerminalServiceSetting -Namespace root\cimv2\TerminalServices).SetAllowTSConnections(1,1) | Out-Null
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
-Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0
-
-# Restart RDP Services to apply changes
-Restart-Service TermService -Force -ErrorAction SilentlyContinue
+Start-Service TermService, SessionEnv, UmRdpService -ErrorAction SilentlyContinue
 
 Write-Host "Final Port/Service Audit:"
 Get-Service TermService, SessionEnv, UmRdpService | Select-Object Status, Name | Out-String | Write-Host
