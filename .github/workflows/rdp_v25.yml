@@ -75,69 +75,88 @@ jobs:
           Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey=""$env:TAILSCALE_AUTHKEY"" --hostname=""gh-win-server-2025"" --accept-routes --advertise-exit-node" -NoNewWindow -Wait
 
       - name: Run Provisioning Script
-        shell: powershell
+        shell: pwsh
         env:
           VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
         run: |
           # 1. State Directory Scaffolding
-          $StateDir = 'C:\State'; $BaseProfile = 'C:\Users\runneradmin'; $ProfileRoot = Join-Path $StateDir 'Profile'
-          if (-not (Test-Path $StateDir)) { $null = New-Item -Path $StateDir -ItemType Directory -Force }
-          if (-not (Test-Path $ProfileRoot)) { $null = New-Item -Path $ProfileRoot -ItemType Directory -Force }
+          $StateDir = 'C:\State';
+          $BaseProfile = 'C:\Users\runneradmin';
+          $ProfileRoot = Join-Path $StateDir 'Profile';
+          if (-not (Test-Path $StateDir)) { New-Item -Path $StateDir -ItemType Directory -Force | Out-Null };
+          if (-not (Test-Path $ProfileRoot)) { New-Item -Path $ProfileRoot -ItemType Directory -Force | Out-Null };
 
           # 2. Prevent Locked Files
-          $AppsToKill = @('chrome', 'msedge', 'onedrive', 'teams', 'skype', 'explorer')
-          foreach ($App in $AppsToKill) { Stop-Process -Name $App -Force -ErrorAction SilentlyContinue }
-          Start-Sleep -Seconds 2
+          $AppsToKill = @('chrome', 'msedge', 'onedrive', 'teams', 'skype', 'explorer');
+          foreach ($App in $AppsToKill) { Stop-Process -Name $App -Force -ErrorAction SilentlyContinue };
+          Start-Sleep -Seconds 2;
 
           # 3. Registry-Based Shell Folder Redirection
-          $ShellFoldersKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
-          $Redirections = @{'Desktop'="$ProfileRoot\Desktop";'Personal'="$ProfileRoot\Documents";'My Pictures'="$ProfileRoot\Pictures";'My Video'="$ProfileRoot\Videos";'{374DE296-1261-41E8-A953-973F9238B61A}'="$ProfileRoot\Downloads"}
-          foreach ($Key in $Redirections.Keys) { if (-not (Test-Path $Redirections[$Key])) { $null = New-Item -Path $Redirections[$Key] -ItemType Directory -Force }; Set-ItemProperty -Path $ShellFoldersKey -Name $Key -Value $Redirections[$Key] -Force }
+          $ShellFoldersKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders';
+          $Redirections = @{
+              'Desktop'   = "$ProfileRoot\Desktop";
+              'Personal'  = "$ProfileRoot\Documents";
+              'My Pictures' = "$ProfileRoot\Pictures";
+              'My Video'  = "$ProfileRoot\Videos";
+              '{374DE296-1261-41E8-A953-973F9238B61A}' = "$ProfileRoot\Downloads";
+          };
+          foreach ($Key in $Redirections.Keys) {
+              if (-not (Test-Path $Redirections[$Key])) { New-Item -Path $Redirections[$Key] -ItemType Directory -Force | Out-Null };
+              Set-ItemProperty -Path $ShellFoldersKey -Name $Key -Value $Redirections[$Key] -Force;
+          }
 
           # 4. Junction-Based AppData & System Persistence
-          $JunctionMaps = @(@{Source='AppData\Roaming';Target="$ProfileRoot\AppData\Roaming"},@{Source='AppData\Local';Target="$ProfileRoot\AppData\Local"},@{Source='.ssh';Target="$ProfileRoot\.ssh"})
+          $JunctionMaps = @(
+              @{ Source = 'AppData\Roaming'; Target = "$ProfileRoot\AppData\Roaming" },
+              @{ Source = 'AppData\Local'; Target = "$ProfileRoot\AppData\Local" },
+              @{ Source = '.ssh'; Target = "$ProfileRoot\.ssh" }
+          );
           foreach ($Map in $JunctionMaps) {
-              $SourcePath = Join-Path $BaseProfile $Map.Source; $TargetPath = $Map.Target
-              if (-not (Test-Path $TargetPath)) { $null = New-Item -Path $TargetPath -ItemType Directory -Force }
+              $SourcePath = Join-Path $BaseProfile $Map.Source;
+              $TargetPath = $Map.Target;
+              if (-not (Test-Path $TargetPath)) { New-Item -Path $TargetPath -ItemType Directory -Force | Out-Null };
               if (Test-Path $SourcePath) {
-                  if ((Get-Item $SourcePath).Attributes -notlike '*ReparsePoint*') {
-                      Get-ChildItem -Path $SourcePath | Move-Item -Destination $TargetPath -Force -ErrorAction SilentlyContinue
-                      Remove-Item $SourcePath -Recurse -Force
-                      $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force
+                  $Item = Get-Item $SourcePath;
+                  if ($Item.Attributes -notlike '*ReparsePoint*') {
+                      Get-ChildItem -Path $SourcePath | Move-Item -Destination $TargetPath -Force -ErrorAction SilentlyContinue;
+                      Remove-Item $SourcePath -Recurse -Force;
+                      New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force | Out-Null;
                   }
-              } else { $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force }
+              } else {
+                  New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force | Out-Null;
+              }
           }
 
           # 5. Networking & Firewall Hardening
-          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
-          netsh advfirewall firewall add rule name="RDP-TCP-In" dir=in action=allow protocol=TCP localport=3389 profile=any
-          netsh advfirewall firewall add rule name="SSH-TCP-In" dir=in action=allow protocol=TCP localport=22 profile=any
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False;
+          netsh advfirewall firewall add rule name="RDP-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=3389 profile=any;
+          netsh advfirewall firewall add rule name="SSH-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=22 profile=any;
 
           # 6. Service Health & RDP Binding
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
-          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force;
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force;
+          Restart-Service TermService -Force -ErrorAction SilentlyContinue;
 
           # 7. User Configuration
           if ($env:VM_PASSWORD) {
-              $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force
-              Set-LocalUser -Name 'runneradmin' -Password $Password
-              Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue
-              Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue
+              $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force;
+              Set-LocalUser -Name 'runneradmin' -Password $Password;
+              Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue;
+              Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue;
           }
-          Start-Process explorer
+          Start-Process explorer;
 
       - name: VM Status & Connection Info
-        shell: powershell
+        shell: pwsh
         run: |
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "==========================================" -ForegroundColor Cyan
-          Write-Host "SERVER 2025 IS READY" -ForegroundColor Cyan
-          Write-Host "Tailscale IP: $ip" -ForegroundColor Yellow
-          Write-Host "Hostname: gh-win-server-2025" -ForegroundColor Yellow
-          Write-Host "Username: runneradmin" -ForegroundColor Yellow
-          Write-Host "Access via RDP or SSH using Tailscale IP" -ForegroundColor White
-          Write-Host "==========================================" -ForegroundColor Cyan
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4;
+          Write-Host "==========================================" -ForegroundColor Cyan;
+          Write-Host "SERVER 2025 IS READY (pwsh MODE)" -ForegroundColor Cyan;
+          Write-Host "Tailscale IP: $ip" -ForegroundColor Yellow;
+          Write-Host "Hostname: gh-win-server-2025" -ForegroundColor Yellow;
+          Write-Host "Username: runneradmin" -ForegroundColor Yellow;
+          Write-Host "Access via RDP or SSH using Tailscale IP" -ForegroundColor White;
+          Write-Host "==========================================" -ForegroundColor Cyan;
 
       - name: Keep VM Alive
         shell: powershell
