@@ -144,12 +144,29 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=3389 profile=any;
           netsh advfirewall firewall add rule name="SSH-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=22 profile=any;
 
-          # 5. Service Health & RDP Binding
+          # 5. Service Health & RDP Binding (Deep Enablement)
+          Write-Host "Configuring RDP Services..." -ForegroundColor Cyan;
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force;
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force;
-          Restart-Service TermService -Force -ErrorAction SilentlyContinue;
 
-          # 6. User Configuration
+          $Services = @('TermService', 'UmRdpService', 'RemoteRegistry');
+          foreach ($Svc in $Services) {
+              Set-Service -Name $Svc -StartupType Automatic -ErrorAction SilentlyContinue;
+              Start-Service -Name $Svc -ErrorAction SilentlyContinue;
+              Write-Host "Service $Svc status: $((Get-Service $Svc).Status)" -ForegroundColor Yellow;
+          }
+
+          # 6. Definitive Firewall Rules (All Profiles)
+          Write-Host "Hardening Firewall Rules..." -ForegroundColor Cyan;
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False;
+          New-NetFirewallRule -DisplayName "RDP-Inbound" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -Force -ErrorAction SilentlyContinue;
+
+          # 7. Network Diagnostics (Post-Config)
+          Write-Host "--- Post-Config Diagnostics ---" -ForegroundColor Cyan;
+          netstat -an | Select-String "3389";
+          Get-NetFirewallRule -DisplayName "RDP-Inbound" | Select-Object Name, Enabled, Direction, Action;
+
+          # 8. User Configuration
           if ($env:VM_PASSWORD) {
               $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force;
               Set-LocalUser -Name 'runneradmin' -Password $Password;
