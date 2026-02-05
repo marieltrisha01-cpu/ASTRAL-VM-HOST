@@ -158,6 +158,14 @@ jobs:
           Write-Host "Access via RDP or SSH using Tailscale IP" -ForegroundColor White;
           Write-Host "==========================================" -ForegroundColor Cyan;
 
+          # Discord Notification Integration
+          if ("${{ secrets.DISCORD_WEBHOOK }}") {
+            $body = @{
+              content = "🚀 **ASTRAL-VM Server 2025 Ready**`n`n📍 **IP:** ``$ip`` `n👤 **User:** ``runneradmin`` `n🔑 **Pass:** ``${{ github.event.inputs.duration }}h duration``"
+            } | ConvertTo-Json;
+            Invoke-RestMethod -Uri "${{ secrets.DISCORD_WEBHOOK }}" -Method Post -Body $body -ContentType "application/json";
+          }
+
       - name: Keep VM Alive
         shell: powershell
         run: |
