@@ -1,4 +1,4 @@
-# Advanced RDP/SSH Provisioning Script - /rdpdev 100% Persistence Model
+﻿# Advanced RDP/SSH Provisioning Script - /rdpdev 100% Persistence Model
 $ErrorActionPreference = 'Stop'
 
 Write-Host '--- INITIALIZING 100% PERSISTENCE PROVISIONING ---' -ForegroundColor Cyan
@@ -54,9 +54,9 @@ foreach ($Map in $JunctionMaps) {
                 Get-ChildItem -Path $SourcePath | Move-Item -Destination $TargetPath -Force -ErrorAction SilentlyContinue
                 Remove-Item $SourcePath -Recurse -Force
                 $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force
-                Write-Host ('✓ Redirected ' + $Map.Source) -ForegroundColor Green
+                Write-Host ('âœ“ Redirected ' + $Map.Source) -ForegroundColor Green
             } catch {
-                Write-Host ('⚠ Warning: ' + $Map.Source) -ForegroundColor Red
+                Write-Host ('âš  Warning: ' + $Map.Source) -ForegroundColor Red
                 try { $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force -ErrorAction SilentlyContinue } catch {}
             }
         }
@@ -98,7 +98,7 @@ $TailscaleInterface = $null
 while ($RetryCount -lt 12) {
     $TailscaleInterface = Get-NetIPInterface -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue
     if ($TailscaleInterface) { 
-        Write-Host "✓ Tailscale connected." -ForegroundColor Green
+        Write-Host "âœ“ Tailscale connected." -ForegroundColor Green
         break 
     }
     Start-Sleep -Seconds 5
@@ -133,7 +133,7 @@ netstat -an | Select-String "LISTENING" | Select-String "3389|22|8080"
 $Listener = [System.Net.Sockets.TcpListener]8080
 try {
     $Listener.Start()
-    Write-Host "✓ Dummy connectivity listener started." -ForegroundColor Green
+    Write-Host "âœ“ Dummy connectivity listener started." -ForegroundColor Green
 } catch {
     Write-Host "Failed to start dummy listener: $_" -ForegroundColor Red
 }
