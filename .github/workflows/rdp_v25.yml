@@ -4,10 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: 'Duration to keep the VM alive (in hours)'
+        description: "Duration to keep the VM alive (in hours)"
         required: true
-        default: '6'
-
+        default: "6"
 
 permissions: write-all
 
@@ -51,14 +50,14 @@ jobs:
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
           Start-Process -FilePath "tailscale-setup.exe" -ArgumentList "/quiet", "/norestart" -Wait
           "C:\Program Files\Tailscale" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          
+
           if (Test-Path "C:\State\server-state.conf") {
             Write-Host "Restoring Tailscale Identity..."
             Stop-Service Tailscale
             Copy-Item "C:\State\server-state.conf" "C:\ProgramData\Tailscale\server-state.conf" -Force
             Start-Service Tailscale
           }
-          
+
           & "C:\Program Files\Tailscale\tailscale.exe" version
 
       - name: Connect to Tailscale
@@ -80,7 +79,53 @@ jobs:
         env:
           VM_PASSWORD: ${{ secrets.VM_PASSWORD }}
         run: |
-          ./provision.ps1
+          # 1. State Directory Scaffolding
+          $StateDir = 'C:\State'; $BaseProfile = 'C:\Users\runneradmin'; $ProfileRoot = Join-Path $StateDir 'Profile'
+          if (-not (Test-Path $StateDir)) { $null = New-Item -Path $StateDir -ItemType Directory -Force }
+          if (-not (Test-Path $ProfileRoot)) { $null = New-Item -Path $ProfileRoot -ItemType Directory -Force }
+
+          # 2. Prevent Locked Files
+          $AppsToKill = @('chrome', 'msedge', 'onedrive', 'teams', 'skype', 'explorer')
+          foreach ($App in $AppsToKill) { Stop-Process -Name $App -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
+
+          # 3. Registry-Based Shell Folder Redirection
+          $ShellFoldersKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+          $Redirections = @{'Desktop'="$ProfileRoot\Desktop";'Personal'="$ProfileRoot\Documents";'My Pictures'="$ProfileRoot\Pictures";'My Video'="$ProfileRoot\Videos";'{374DE296-1261-41E8-A953-973F9238B61A}'="$ProfileRoot\Downloads"}
+          foreach ($Key in $Redirections.Keys) { if (-not (Test-Path $Redirections[$Key])) { $null = New-Item -Path $Redirections[$Key] -ItemType Directory -Force }; Set-ItemProperty -Path $ShellFoldersKey -Name $Key -Value $Redirections[$Key] -Force }
+
+          # 4. Junction-Based AppData & System Persistence
+          $JunctionMaps = @(@{Source='AppData\Roaming';Target="$ProfileRoot\AppData\Roaming"},@{Source='AppData\Local';Target="$ProfileRoot\AppData\Local"},@{Source='.ssh';Target="$ProfileRoot\.ssh"})
+          foreach ($Map in $JunctionMaps) {
+              $SourcePath = Join-Path $BaseProfile $Map.Source; $TargetPath = $Map.Target
+              if (-not (Test-Path $TargetPath)) { $null = New-Item -Path $TargetPath -ItemType Directory -Force }
+              if (Test-Path $SourcePath) {
+                  if ((Get-Item $SourcePath).Attributes -notlike '*ReparsePoint*') {
+                      Get-ChildItem -Path $SourcePath | Move-Item -Destination $TargetPath -Force -ErrorAction SilentlyContinue
+                      Remove-Item $SourcePath -Recurse -Force
+                      $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force
+                  }
+              } else { $null = New-Item -ItemType Junction -Path $SourcePath -Target $TargetPath -Force }
+          }
+
+          # 5. Networking & Firewall Hardening
+          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
+          netsh advfirewall firewall add rule name="RDP-TCP-In" dir=in action=allow protocol=TCP localport=3389 profile=any
+          netsh advfirewall firewall add rule name="SSH-TCP-In" dir=in action=allow protocol=TCP localport=22 profile=any
+
+          # 6. Service Health & RDP Binding
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force
+          Restart-Service TermService -Force -ErrorAction SilentlyContinue
+
+          # 7. User Configuration
+          if ($env:VM_PASSWORD) {
+              $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force
+              Set-LocalUser -Name 'runneradmin' -Password $Password
+              Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue
+              Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue
+          }
+          Start-Process explorer
 
       - name: VM Status & Connection Info
         shell: powershell
@@ -100,7 +145,7 @@ jobs:
           $hours = [int]${{ github.event.inputs.duration }}
           $endTime = (Get-Date).AddHours($hours)
           Write-Host "VM will stay alive until $endTime (approx $hours hours)"
-          
+
           while ((Get-Date) -lt $endTime) {
             $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
             if ($status.BackendState -ne "Running") {
@@ -144,7 +189,7 @@ jobs:
 
           Write-Host "Creating session snapshot..."
           Compress-Archive -Path "C:\State\*" -DestinationPath "C:\state.zip" -Force
-          
+
           if ($env:RCLONE_CONFIG_DATA) {
             Write-Host "Mirroring state to remote cloud..."
             rclone sync "C:\State" "remote:rdpdev-state" -v
@@ -157,5 +202,3 @@ jobs:
           name: state
           path: C:\state.zip
           retention-days: 7
-
-
