@@ -86,12 +86,7 @@ jobs:
           if (-not (Test-Path $StateDir)) { New-Item -Path $StateDir -ItemType Directory -Force | Out-Null };
           if (-not (Test-Path $ProfileRoot)) { New-Item -Path $ProfileRoot -ItemType Directory -Force | Out-Null };
 
-          # 2. Prevent Locked Files
-          $AppsToKill = @('chrome', 'msedge', 'onedrive', 'teams', 'skype', 'explorer');
-          foreach ($App in $AppsToKill) { Stop-Process -Name $App -Force -ErrorAction SilentlyContinue };
-          Start-Sleep -Seconds 2;
-
-          # 3. Registry-Based Shell Folder Redirection
+          # 2. Registry-Based Shell Folder Redirection (Safe Mode: No Explorer Kill)
           $ShellFoldersKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders';
           $Redirections = @{
               'Desktop'   = "$ProfileRoot\Desktop";
@@ -105,7 +100,7 @@ jobs:
               Set-ItemProperty -Path $ShellFoldersKey -Name $Key -Value $Redirections[$Key] -Force;
           }
 
-          # 4. Junction-Based AppData & System Persistence
+          # 3. Junction-Based AppData & System Persistence
           $JunctionMaps = @(
               @{ Source = 'AppData\Roaming'; Target = "$ProfileRoot\AppData\Roaming" },
               @{ Source = 'AppData\Local'; Target = "$ProfileRoot\AppData\Local" },
@@ -127,24 +122,23 @@ jobs:
               }
           }
 
-          # 5. Networking & Firewall Hardening
+          # 4. Networking & Firewall Hardening
           Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False;
           netsh advfirewall firewall add rule name="RDP-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=3389 profile=any;
           netsh advfirewall firewall add rule name="SSH-TCP-In-Definitive" dir=in action=allow protocol=TCP localport=22 profile=any;
 
-          # 6. Service Health & RDP Binding
+          # 5. Service Health & RDP Binding
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force;
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force;
           Restart-Service TermService -Force -ErrorAction SilentlyContinue;
 
-          # 7. User Configuration
+          # 6. User Configuration
           if ($env:VM_PASSWORD) {
               $Password = $env:VM_PASSWORD | ConvertTo-SecureString -AsPlainText -Force;
               Set-LocalUser -Name 'runneradmin' -Password $Password;
               Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'runneradmin' -ErrorAction SilentlyContinue;
               Add-LocalGroupMember -Group 'Administrators' -Member 'runneradmin' -ErrorAction SilentlyContinue;
           }
-          Start-Process explorer;
 
       - name: VM Status & Connection Info
         shell: pwsh
